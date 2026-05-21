@@ -2,160 +2,251 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 
 interface Props {
   sentences: string[]
+  timeLimit: number
   onBack: () => void
 }
 
-type Phase = 'typing' | 'result'
-
-interface RoundResult {
-  wpm: number
-  accuracy: number
-  time: number
-  sentence: string
-}
+type Phase = 'countdown' | 'playing' | 'finished'
 
 function pickRandom(arr: string[], exclude?: string): string {
   if (arr.length === 1) return arr[0]
-  const candidates = arr.filter(s => s !== exclude)
-  return candidates[Math.floor(Math.random() * candidates.length)]
+  const pool = arr.filter(s => s !== exclude)
+  return pool[Math.floor(Math.random() * pool.length)]
 }
 
-export default function TypingScreen({ sentences, onBack }: Props) {
+function StatBadge({
+  label, value, unit = '', color,
+}: { label: string; value: number; unit?: string; color: string }) {
+  return (
+    <div className="flex flex-col items-center">
+      <span className="text-xs tracking-widest mb-1" style={{ color: '#4a4a6a', fontFamily: 'Courier New, monospace' }}>
+        {label}
+      </span>
+      <span className="text-xl font-bold" style={{ color, fontFamily: 'Courier New, monospace' }}>
+        {value}{unit}
+      </span>
+    </div>
+  )
+}
+
+function BigStat({
+  label, value, unit = '', color,
+}: { label: string; value: number; unit?: string; color: string }) {
+  return (
+    <div className="flex flex-col items-center">
+      <span className="text-xs tracking-widest mb-2" style={{ color: '#4a4a6a', fontFamily: 'Courier New, monospace' }}>
+        {label}
+      </span>
+      <span className="font-bold" style={{ color, fontFamily: 'Courier New, monospace', fontSize: '2.5rem' }}>
+        {value}
+        <span style={{ fontSize: '1.2rem' }}>{unit}</span>
+      </span>
+    </div>
+  )
+}
+
+export default function TypingScreen({ sentences, timeLimit, onBack }: Props) {
+  const [phase, setPhase] = useState<Phase>('countdown')
+  const [countdown, setCountdown] = useState(3)
+  const [timeLeft, setTimeLeft] = useState(timeLimit)
   const [current, setCurrent] = useState(() => pickRandom(sentences))
   const [typed, setTyped] = useState('')
-  const [phase, setPhase] = useState<Phase>('typing')
-  const [startTime, setStartTime] = useState<number | null>(null)
-  const [liveWpm, setLiveWpm] = useState(0)
-  const [liveAccuracy, setLiveAccuracy] = useState(100)
-  const [result, setResult] = useState<RoundResult | null>(null)
-  const [totalErrors, setTotalErrors] = useState(0)
+  const [completedCount, setCompletedCount] = useState(0)
+  const [completedChars, setCompletedChars] = useState(0)
+  const [errorCount, setErrorCount] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
-  const wpmTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const focusInput = useCallback(() => {
-    inputRef.current?.focus()
-  }, [])
-
+  // Countdown 3 → 2 → 1 → GO
   useEffect(() => {
-    focusInput()
-  }, [current, phase, focusInput])
+    if (phase !== 'countdown') return
+    if (countdown <= 0) {
+      setPhase('playing')
+      return
+    }
+    const id = setTimeout(() => setCountdown(c => c - 1), 1000)
+    return () => clearTimeout(id)
+  }, [phase, countdown])
 
+  // Game timer
   useEffect(() => {
-    if (phase === 'typing') {
-      focusInput()
+    if (phase !== 'playing') return
+    if (timeLeft <= 0) {
+      setPhase('finished')
+      return
     }
-  }, [phase, focusInput])
+    const id = setTimeout(() => setTimeLeft(t => t - 1), 1000)
+    return () => clearTimeout(id)
+  }, [phase, timeLeft])
 
-  // Live WPM ticker
+  // Always keep input focused during play
+  const focusInput = useCallback(() => { inputRef.current?.focus() }, [])
   useEffect(() => {
-    if (startTime && phase === 'typing') {
-      wpmTimerRef.current = setInterval(() => {
-        const elapsed = (Date.now() - startTime) / 1000 / 60
-        if (elapsed > 0) {
-          setLiveWpm(Math.round(typed.length / 5 / elapsed))
-        }
-      }, 300)
-    }
-    return () => {
-      if (wpmTimerRef.current) clearInterval(wpmTimerRef.current)
-    }
-  }, [startTime, typed.length, phase])
+    if (phase === 'playing') focusInput()
+  }, [phase, current, focusInput])
+
+  const elapsed = timeLimit - timeLeft
+  const wpm = elapsed > 0 ? Math.round((completedChars / 5) / (elapsed / 60)) : 0
+  const totalKeyed = completedChars + errorCount
+  const accuracy = totalKeyed > 0 ? Math.round((completedChars / totalKeyed) * 100) : 100
 
   function handleInput(e: React.ChangeEvent<HTMLInputElement>) {
-    if (phase !== 'typing') return
+    if (phase !== 'playing') return
     const value = e.target.value
 
-    if (!startTime && value.length > 0) {
-      setStartTime(Date.now())
-    }
-
-    // Count errors at each new character
+    // Count errors on each forward keystroke
     if (value.length > typed.length) {
       const idx = value.length - 1
-      if (value[idx] !== current[idx]) {
-        setTotalErrors(prev => prev + 1)
+      if (idx < current.length && value[idx] !== current[idx]) {
+        setErrorCount(prev => prev + 1)
       }
     }
 
     setTyped(value)
 
-    // Compute live accuracy
-    let correct = 0
-    for (let i = 0; i < value.length; i++) {
-      if (value[i] === current[i]) correct++
-    }
-    const acc = value.length > 0 ? Math.round((correct / value.length) * 100) : 100
-    setLiveAccuracy(acc)
-
-    // Check completion
+    // Sentence complete
     if (value === current) {
-      const elapsed = startTime ? (Date.now() - startTime) / 1000 : 1
-      const wpm = Math.round(current.length / 5 / (elapsed / 60))
-      const totalTyped = value.length
-      const errors = totalErrors + (value[value.length - 1] !== current[value.length - 1] ? 1 : 0)
-      const accuracy = Math.round(((totalTyped - errors) / totalTyped) * 100)
-
-      if (wpmTimerRef.current) clearInterval(wpmTimerRef.current)
-
-      setResult({ wpm, accuracy: Math.max(0, accuracy), time: elapsed, sentence: current })
-      setPhase('result')
+      setCompletedChars(prev => prev + current.length)
+      setCompletedCount(prev => prev + 1)
+      setCurrent(pickRandom(sentences, current))
+      setTyped('')
     }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (phase === 'result' && e.key === 'Enter') {
-      nextSentence()
-    }
-  }
-
-  function nextSentence() {
-    const next = pickRandom(sentences, current)
-    setCurrent(next)
-    setTyped('')
-    setPhase('typing')
-    setStartTime(null)
-    setLiveWpm(0)
-    setLiveAccuracy(100)
-    setTotalErrors(0)
-    setResult(null)
-  }
-
-  // Character render for the target sentence
   function renderChars() {
     return current.split('').map((ch, i) => {
-      let color = '#4a4a6a'   // untyped
+      let color = '#4a4a6a'
       let bg = 'transparent'
-
       if (i < typed.length) {
-        if (typed[i] === ch) {
-          color = '#4ade80'   // correct = green
-        } else {
-          color = '#f87171'   // incorrect = red
-          bg = 'rgba(248,113,113,0.1)'
-        }
+        color = typed[i] === ch ? '#4ade80' : '#f87171'
+        bg = typed[i] !== ch ? 'rgba(248,113,113,0.1)' : 'transparent'
       } else if (i === typed.length) {
-        color = '#e2e8f0'     // current cursor position
-        bg = 'rgba(124,106,247,0.25)'
+        color = '#e2e8f0'
+        bg = 'rgba(124,106,247,0.3)'
       }
-
       return (
-        <span
-          key={i}
-          style={{
-            color,
-            background: bg,
-            borderRadius: '2px',
-            transition: 'color 0.05s',
-          }}
-        >
-          {ch === ' ' ? ' ' : ch}
+        <span key={i} style={{ color, background: bg, borderRadius: '3px', transition: 'color 0.05s' }}>
+          {ch}
         </span>
       )
     })
   }
 
-  const elapsedSec = startTime ? (Date.now() - startTime) / 1000 : 0
+  const timerRatio = timeLeft / timeLimit
+  const timerColor = timerRatio > 0.5 ? '#4ade80' : timerRatio > 0.25 ? '#fbbf24' : '#f87171'
 
+  function resetGame() {
+    setPhase('countdown')
+    setCountdown(3)
+    setTimeLeft(timeLimit)
+    setCurrent(pickRandom(sentences))
+    setTyped('')
+    setCompletedCount(0)
+    setCompletedChars(0)
+    setErrorCount(0)
+  }
+
+  /* ── COUNTDOWN ─────────────────────────────────── */
+  if (phase === 'countdown') {
+    return (
+      <div
+        className="min-h-screen flex flex-col items-center justify-center"
+        style={{ background: '#0d0d1a' }}
+      >
+        <div
+          className="font-bold select-none"
+          style={{
+            fontSize: countdown === 0 ? '4rem' : '9rem',
+            color: countdown === 0 ? '#4ade80' : '#7c6af7',
+            fontFamily: 'Courier New, monospace',
+            transition: 'all 0.3s',
+            textShadow: `0 0 60px ${countdown === 0 ? 'rgba(74,222,128,0.5)' : 'rgba(124,106,247,0.5)'}`,
+          }}
+        >
+          {countdown === 0 ? 'GO!' : countdown}
+        </div>
+        <div className="mt-6 text-sm tracking-widest" style={{ color: '#4a4a6a', fontFamily: 'Courier New, monospace' }}>
+          {countdown > 0 ? '準備して...' : ''}
+        </div>
+      </div>
+    )
+  }
+
+  /* ── FINISHED ──────────────────────────────────── */
+  if (phase === 'finished') {
+    const rank = wpm >= 80 ? 'S' : wpm >= 60 ? 'A' : wpm >= 40 ? 'B' : wpm >= 20 ? 'C' : 'D'
+    const rankColor = rank === 'S' ? '#fbbf24' : rank === 'A' ? '#4ade80' : rank === 'B' ? '#7c6af7' : rank === 'C' ? '#64748b' : '#f87171'
+
+    return (
+      <div
+        className="min-h-screen flex flex-col items-center justify-center px-6"
+        style={{ background: '#0d0d1a' }}
+      >
+        <div
+          className="w-full max-w-md rounded-2xl px-10 py-12 text-center"
+          style={{ background: '#12122a', border: '1px solid #2a2a4a', boxShadow: '0 8px 64px rgba(0,0,0,0.6)' }}
+        >
+          {/* Rank */}
+          <div
+            className="text-8xl font-bold mb-1"
+            style={{ color: rankColor, fontFamily: 'Courier New, monospace', textShadow: `0 0 40px ${rankColor}80` }}
+          >
+            {rank}
+          </div>
+          <div className="text-xs tracking-widest mb-8" style={{ color: '#4a4a6a', fontFamily: 'Courier New, monospace' }}>
+            RANK
+          </div>
+
+          {/* Stats */}
+          <div className="grid grid-cols-3 gap-6 mb-8">
+            <BigStat label="WPM" value={wpm} color="#7c6af7" />
+            <BigStat label="精度" value={accuracy} unit="%" color={accuracy >= 90 ? '#4ade80' : '#fbbf24'} />
+            <BigStat label="完了" value={completedCount} unit="文" color="#64748b" />
+          </div>
+
+          {/* Detail */}
+          <div
+            className="text-xs mb-8 py-3 rounded-lg"
+            style={{ color: '#4a4a6a', fontFamily: 'Courier New, monospace', background: '#0d0d1a' }}
+          >
+            {completedChars}文字 ／ {errorCount}ミス ／ {timeLimit}秒
+          </div>
+
+          {/* Buttons */}
+          <div className="flex gap-3">
+            <button
+              onClick={onBack}
+              className="flex-1 py-3 rounded-lg font-bold text-sm tracking-widest cursor-pointer"
+              style={{
+                background: 'transparent',
+                border: '1px solid #2a2a4a',
+                color: '#4a4a6a',
+                fontFamily: 'Courier New, monospace',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = '#7c6af7'; e.currentTarget.style.color = '#7c6af7' }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = '#2a2a4a'; e.currentTarget.style.color = '#4a4a6a' }}
+            >
+              ← リストへ
+            </button>
+            <button
+              onClick={resetGame}
+              className="flex-1 py-3 rounded-lg font-bold text-sm tracking-widest cursor-pointer"
+              style={{
+                background: 'linear-gradient(135deg, #7c6af7, #5b4fcf)',
+                border: 'none',
+                color: '#fff',
+                fontFamily: 'Courier New, monospace',
+                boxShadow: '0 4px 16px rgba(124,106,247,0.4)',
+              }}
+            >
+              もう一度 ↺
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  /* ── PLAYING ───────────────────────────────────── */
   return (
     <div
       className="min-h-screen flex flex-col"
@@ -163,11 +254,14 @@ export default function TypingScreen({ sentences, onBack }: Props) {
       onClick={focusInput}
     >
       {/* Top bar */}
-      <div className="flex items-center justify-between px-8 py-4"
-        style={{ borderBottom: '1px solid #1a1a3a' }}>
+      <div
+        className="flex items-center justify-between px-8 py-3"
+        style={{ borderBottom: '1px solid #1a1a3a' }}
+      >
+        {/* Back */}
         <button
           onClick={onBack}
-          className="text-sm tracking-widest transition-colors cursor-pointer px-4 py-2 rounded"
+          className="text-sm cursor-pointer px-3 py-2 rounded"
           style={{
             color: '#4a4a6a',
             background: 'transparent',
@@ -177,43 +271,64 @@ export default function TypingScreen({ sentences, onBack }: Props) {
           onMouseEnter={e => { e.currentTarget.style.color = '#7c6af7'; e.currentTarget.style.borderColor = '#7c6af7' }}
           onMouseLeave={e => { e.currentTarget.style.color = '#4a4a6a'; e.currentTarget.style.borderColor = '#2a2a4a' }}
         >
-          ← テキストを変える
+          ← リストへ
         </button>
+
+        {/* Timer (center) */}
+        <div className="flex flex-col items-center gap-1">
+          <span
+            className="font-bold"
+            style={{ fontSize: '2.2rem', color: timerColor, fontFamily: 'Courier New, monospace', lineHeight: 1 }}
+          >
+            {timeLeft}
+          </span>
+          {/* Timer bar */}
+          <div className="w-28 rounded-full overflow-hidden" style={{ height: '4px', background: '#1a1a3a' }}>
+            <div
+              style={{
+                width: `${timerRatio * 100}%`,
+                height: '100%',
+                background: timerColor,
+                borderRadius: '999px',
+                transition: 'width 1s linear, background 0.5s',
+              }}
+            />
+          </div>
+        </div>
 
         {/* Stats */}
         <div className="flex gap-8">
-          <StatBadge label="WPM" value={liveWpm} unit="" color="#7c6af7" />
-          <StatBadge label="ACC" value={liveAccuracy} unit="%" color={liveAccuracy >= 90 ? '#4ade80' : liveAccuracy >= 70 ? '#fbbf24' : '#f87171'} />
-          <StatBadge label="TIME" value={Math.round(elapsedSec)} unit="s" color="#64748b" />
+          <StatBadge label="WPM" value={wpm} color="#7c6af7" />
+          <StatBadge
+            label="ACC"
+            value={accuracy}
+            unit="%"
+            color={accuracy >= 90 ? '#4ade80' : accuracy >= 70 ? '#fbbf24' : '#f87171'}
+          />
+          <StatBadge label="完了" value={completedCount} unit="文" color="#64748b" />
         </div>
       </div>
 
-      {/* Main area */}
-      <div className="flex-1 flex flex-col items-center justify-center px-8 py-12 relative">
+      {/* Main */}
+      <div className="flex-1 flex flex-col items-center justify-center px-8 py-10">
 
-        {/* Sentence display */}
-        <div className="w-full max-w-3xl mb-12">
+        {/* Sentence */}
+        <div className="w-full max-w-3xl mb-10">
           <div
-            className="text-2xl leading-relaxed text-center select-none"
-            style={{
-              fontFamily: 'Courier New, monospace',
-              letterSpacing: '0.05em',
-              minHeight: '3rem',
-            }}
+            className="leading-relaxed text-center select-none"
+            style={{ fontFamily: 'Courier New, monospace', letterSpacing: '0.06em', fontSize: '1.6rem' }}
           >
             {renderChars()}
           </div>
         </div>
 
-        {/* Input */}
+        {/* Input field */}
         <div className="w-full max-w-2xl relative">
           <input
             ref={inputRef}
             type="text"
             value={typed}
             onChange={handleInput}
-            onKeyDown={handleKeyDown}
-            disabled={phase === 'result'}
             autoComplete="off"
             autoCorrect="off"
             autoCapitalize="off"
@@ -231,23 +346,27 @@ export default function TypingScreen({ sentences, onBack }: Props) {
             onFocus={e => { e.currentTarget.style.borderColor = '#7c6af7' }}
             onBlur={e => { e.currentTarget.style.borderColor = '#2a2a4a' }}
           />
-          {typed.length === 0 && phase === 'typing' && (
+          {typed.length === 0 && (
             <div
               className="absolute left-6 top-1/2 -translate-y-1/2 pointer-events-none text-lg"
               style={{ color: '#2a2a4a', fontFamily: 'Courier New, monospace' }}
             >
-              ここに入力してください...
+              ここに入力...
             </div>
           )}
         </div>
 
         {/* Progress bar */}
-        <div className="w-full max-w-2xl mt-4 rounded-full overflow-hidden" style={{ height: '3px', background: '#1a1a3a' }}>
+        <div
+          className="w-full max-w-2xl mt-4 rounded-full overflow-hidden"
+          style={{ height: '3px', background: '#1a1a3a' }}
+        >
           <div
-            className="h-full rounded-full transition-all duration-150"
             style={{
-              width: `${(typed.length / current.length) * 100}%`,
+              width: `${current.length > 0 ? (typed.length / current.length) * 100 : 0}%`,
+              height: '100%',
               background: 'linear-gradient(90deg, #7c6af7, #4ade80)',
+              transition: 'width 0.1s',
             }}
           />
         </div>
@@ -255,74 +374,7 @@ export default function TypingScreen({ sentences, onBack }: Props) {
         <div className="mt-3 text-xs" style={{ color: '#3a3a5a', fontFamily: 'Courier New, monospace' }}>
           {typed.length} / {current.length} 文字
         </div>
-
-        {/* Result overlay */}
-        {phase === 'result' && result && (
-          <div
-            className="absolute inset-0 flex items-center justify-center"
-            style={{ background: 'rgba(13,13,26,0.92)', backdropFilter: 'blur(4px)' }}
-          >
-            <div
-              className="rounded-2xl px-12 py-10 text-center"
-              style={{
-                background: '#12122a',
-                border: '1px solid #2a2a4a',
-                boxShadow: '0 8px 64px rgba(0,0,0,0.6)',
-                minWidth: '380px',
-              }}
-            >
-              <div className="text-4xl mb-6" style={{ color: '#4ade80' }}>✓ CLEAR</div>
-
-              <div className="flex justify-center gap-10 mb-8">
-                <BigStat label="WPM" value={result.wpm} color="#7c6af7" />
-                <BigStat label="精度" value={result.accuracy} unit="%" color={result.accuracy >= 90 ? '#4ade80' : '#fbbf24'} />
-                <BigStat label="時間" value={parseFloat(result.time.toFixed(1))} unit="s" color="#64748b" />
-              </div>
-
-              <button
-                onClick={nextSentence}
-                className="w-full py-3 rounded-lg font-bold tracking-widest transition-all cursor-pointer"
-                style={{
-                  background: 'linear-gradient(135deg, #7c6af7, #5b4fcf)',
-                  color: '#fff',
-                  border: 'none',
-                  fontFamily: 'Courier New, monospace',
-                  boxShadow: '0 4px 16px rgba(124,106,247,0.4)',
-                }}
-              >
-                NEXT → (Enter)
-              </button>
-            </div>
-          </div>
-        )}
       </div>
-    </div>
-  )
-}
-
-function StatBadge({ label, value, unit, color }: { label: string; value: number; unit: string; color: string }) {
-  return (
-    <div className="flex flex-col items-center">
-      <span className="text-xs tracking-widest mb-1" style={{ color: '#4a4a6a', fontFamily: 'Courier New, monospace' }}>
-        {label}
-      </span>
-      <span className="text-xl font-bold" style={{ color, fontFamily: 'Courier New, monospace' }}>
-        {value}{unit}
-      </span>
-    </div>
-  )
-}
-
-function BigStat({ label, value, unit = '', color }: { label: string; value: number; unit?: string; color: string }) {
-  return (
-    <div className="flex flex-col items-center">
-      <span className="text-xs tracking-widest mb-2" style={{ color: '#4a4a6a', fontFamily: 'Courier New, monospace' }}>
-        {label}
-      </span>
-      <span className="text-4xl font-bold" style={{ color, fontFamily: 'Courier New, monospace' }}>
-        {value}
-        <span className="text-lg">{unit}</span>
-      </span>
     </div>
   )
 }

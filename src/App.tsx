@@ -1,29 +1,29 @@
 import { useState } from 'react'
-import TextInputScreen from './components/TextInputScreen'
+import SentenceListScreen from './components/SentenceListScreen'
 import TypingScreen from './components/TypingScreen'
 
-type Screen = 'input' | 'practice'
+type Screen = 'list' | 'practice'
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>('input')
+  const [screen, setScreen] = useState<Screen>('list')
   const [sentences, setSentences] = useState<string[]>([])
+  const [timeLimit, setTimeLimit] = useState(60)
 
-  function handlePlay(text: string) {
-    const raw = text
-      .split(/[。\n]/)
-      .map(s => s.trim())
-      .filter(s => s.length > 0)
-    setSentences(raw)
+  function handleStart(s: string[], t: number) {
+    setSentences(s)
+    setTimeLimit(t)
     setScreen('practice')
   }
 
-  function handleBack() {
-    setScreen('input')
+  if (screen === 'practice') {
+    return (
+      <TypingScreen
+        sentences={sentences}
+        timeLimit={timeLimit}
+        onBack={() => setScreen('list')}
+      />
+    )
   }
 
-  if (screen === 'practice' && sentences.length > 0) {
-    return <TypingScreen sentences={sentences} onBack={handleBack} />
-  }
-
-  return <TextInputScreen onPlay={handlePlay} />
+  return <SentenceListScreen onStart={handleStart} />
 }
